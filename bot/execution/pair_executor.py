@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from uuid import uuid4
+
+from bot.execution.paper_executor import execute_paper_pair
 
 from bot.config.config import Config
 from bot.data_ingestion.bybit_client import BybitClient
@@ -17,6 +20,7 @@ async def execute_delta_neutral_pair(
     config: Config,
     bybit_client: BybitClient | None = None,
     hyperliquid_client: HyperliquidClient | None = None,
+    db_path: str | None = None,
 ) -> ExecutionResult:
     if bybit_client is None or hyperliquid_client is None:
         return _execute_stub_pair(intent, config)
@@ -24,33 +28,75 @@ async def execute_delta_neutral_pair(
     bybit_price = float(intent.metadata.get("bybit_price") or 0.0)
     hyperliquid_price = float(intent.metadata.get("hyperliquid_price") or 0.0)
 
-    if bybit_price <= 0 or hyperliquid_price <= 0:
-        return _build_execution_result(
-            intent,
-            accepted=False,
-            status="LEG_FAILURE",
-            reason="Missing reference prices for live execution",
-            bybit_leg=LegExecutionResult(
-                exchange="bybit",
-                side=intent.bybit_side,
-                order_id="",
-                requested_notional_usd=intent.target_notional_usd,
-                filled_notional_usd=0.0,
-                average_fill_price=0.0,
-                status="REJECTED",
-                reason="Missing Bybit reference price",
-            ),
-            hyperliquid_leg=LegExecutionResult(
-                exchange="hyperliquid",
-                side=intent.hyperliquid_side,
-                order_id="",
-                requested_notional_usd=intent.target_notional_usd,
-                filled_notional_usd=0.0,
-                average_fill_price=0.0,
-                status="REJECTED",
-                reason="Missing Hyperliquid reference price",
-            ),
+    if not LIVE_EXECUTION_ENABLED:
+        if db_path is None:
+            return ExecutionResult(
+                symbol=intent.symbol,
+                strategy_type=intent.strategy_type,
+                status="PAPER_ONLY",
+                accepted=False,
+                reason="Live execution disabled and no DB path available for paper execution",
+                bybit_leg=LegExecutionResult(
+                    exchange="bybit",
+                    side=intent.bybit_side,
+                    order_id="",
+                    requested_notional_usd=intent.target_notional_usd,
+                    filled_notional_usd=0.0,
+                    average_fill_price=0.0,
+                    status="SKIPPED",
+                    reason="Paper execution unavailable",
+                ),
+                hyperliquid_leg=LegExecutionResult(
+                    exchange="hyperliquid",
+                    side=intent.hyperliquid_side,
+                    order_id="",
+                    requested_notional_usd=intent.target_notional_usd,
+                    filled_notional_usd=0.0,
+                    average_fill_price=0.0,
+                    status="SKIPPED",
+                    reason="Paper execution unavailable",
+                ),
+                created_at=datetime.now(timezone.utc),
+                metadata={"mode": "paper"},
+            )
+
+        total_cost_bp = float(intent.gross_expected_bp - intent.expected_net_bp)
+
+        return await execute_paper_pair(
+            intent=intent,
+            bybit_price=bybit_price,
+            hyperliquid_price=hyperliquid_price,
+            db_path=db_path,
+            total_cost_bp=total_cost_bp,
         )
+
+    if bybit_price <= 0 or hyperliquid_price <= 0:
+       return _build_execution_result(
+           intent,
+           accepted=False,
+           status="LEG_FAILURE",
+           reason="Missing reference prices for live execution",
+           bybit_leg=LegExecutionResult(
+              exchange="bybit",
+              side=intent.bybit_side,
+              order_id="",
+              requested_notional_usd=intent.target_notional_usd,
+              filled_notional_usd=0.0,
+              average_fill_price=0.0,
+              status="REJECTED",
+              reason="Missing Bybit reference price",
+           ),
+           hyperliquid_leg=LegExecutionResult(
+              exchange="hyperliquid",
+              side=intent.hyperliquid_side,
+              order_id="",
+              requested_notional_usd=intent.target_notional_usd,
+              filled_notional_usd=0.0,
+              average_fill_price=0.0,
+              status="REJECTED",
+              reason="Missing Hyperliquid reference price",
+           ),
+       )
 
     bybit_leg = await _safe_place_bybit_leg(intent, config, bybit_client, bybit_price)
     hyperliquid_leg = await _safe_place_hyperliquid_leg(intent, config, hyperliquid_client, hyperliquid_price)
@@ -125,6 +171,8 @@ async def execute_delta_neutral_pair(
         final_bybit_leg,
         final_hyperliquid_leg,
     )
+
+LIVE_EXECUTION_ENABLED = os.getenv("LIVE_EXECUTION_ENABLED", "false").strip().lower() == "true"
 
 async def place_bybit_leg(
     intent: TradeIntent,
@@ -207,25 +255,18 @@ async def place_hyperliquid_leg(
             reason="Hyperliquid size rounded to zero",
         )
 
-    raw_price = _post_only_price(
-        reference_price,
-        intent.hyperliquid_side,
-        _relative_tick(reference_price),
-    )
-    price = _round_hyperliquid_price(raw_price)
-
     placement = await hyperliquid_client.place_limit_order(
         symbol=intent.symbol,
         side=intent.hyperliquid_side,
         size=size,
-        price=price,
+        price=reference_price,
     )
     return _placement_to_leg_result(
         exchange="hyperliquid",
         side=intent.hyperliquid_side,
         requested_notional_usd=intent.target_notional_usd,
         placement=placement,
-        fallback_price=price,
+        fallback_price=reference_price,
     )
 
 async def _safe_place_bybit_leg(
@@ -247,7 +288,6 @@ async def _safe_place_bybit_leg(
             status="REJECTED",
             reason=str(exc),
         )
-    
 async def _safe_place_hyperliquid_leg(
     intent: TradeIntent,
     config: Config,
@@ -263,7 +303,7 @@ async def _safe_place_hyperliquid_leg(
             order_id="",
             requested_notional_usd=intent.target_notional_usd,
             filled_notional_usd=0.0,
-            average_fill_price=reference_price,
+            average_fill_price=0.0,
             status="REJECTED",
             reason=str(exc),
         )
@@ -280,7 +320,6 @@ def _round_hyperliquid_price(price: float) -> float:
     if price >= 10:
         return round(price, 4)
     return round(price, 5)
-
 
 async def handle_partial_fill(
     intent: TradeIntent,

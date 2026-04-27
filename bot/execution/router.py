@@ -13,6 +13,7 @@ async def submit_execution_intent(
     config: Config | None = None,
     bybit_client: BybitClient | None = None,
     hyperliquid_client: HyperliquidClient | None = None,
+    db_path: str | None = None,
 ) -> ExecutionResult:
     runtime_config = config or load_config()
     trade_intent = intent if isinstance(intent, TradeIntent) else intent.to_trade_intent()
@@ -21,4 +22,5 @@ async def submit_execution_intent(
         runtime_config,
         bybit_client=bybit_client,
         hyperliquid_client=hyperliquid_client,
+        db_path=db_path,
     )

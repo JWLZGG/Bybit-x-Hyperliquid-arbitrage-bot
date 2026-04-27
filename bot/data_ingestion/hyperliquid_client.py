@@ -271,7 +271,7 @@ class HyperliquidClient:
         _, exchange = await self._ensure_sdk_clients()
         coin = self._to_hl_coin(symbol)
         rounded_size = await self.round_size(symbol, size)
-        rounded_price = self.round_price(price)
+        rounded_price = await self.round_price(symbol, price)
 
         is_buy = side == "Buy"
         payload = await asyncio.to_thread(
@@ -283,6 +283,19 @@ class HyperliquidClient:
             {"limit": {"tif": time_in_force}},
             reduce_only,
         )
+
+        if isinstance(payload, dict) and payload.get("status") == "err":
+            err = payload.get("response")
+            if isinstance(err, str) and "Too many cumulative requests sent" in err:
+                return PlacementResult(
+                    success=False,
+                    order_id="",
+                    status="REJECTED",
+                    reason=f"Hyperliquid request quota exceeded: {err}",
+                    average_fill_price=0.0,
+                    filled_size=0.0,
+                    raw_response=response,
+                )
 
         if not isinstance(payload, dict):
             raise RuntimeError(
@@ -443,6 +456,68 @@ class HyperliquidClient:
 
         self._resolved_user_address = resolved_address.lower()
         return self._resolved_user_address
+
+    async def round_price(self, symbol: str, price: float) -> float:
+        print("HL NEW round_price called", symbol, price)
+
+        info, _ = await self._ensure_sdk_clients()
+        coin = self._to_hl_coin(symbol)
+        asset = info.name_to_asset(coin)
+
+        meta = None
+        if hasattr(info, "meta"):
+            try:
+                meta = await asyncio.to_thread(info.meta)
+                print("HL RAW META", meta)
+            except Exception as exc:
+                print("HL round_price meta fetch failed", exc)
+                meta = None
+
+        tick_size = None
+        price_decimals = None
+
+        if isinstance(meta, dict):
+            universe = meta.get("universe") or meta.get("assets") or []
+            if isinstance(universe, list) and 0 <= asset < len(universe):
+                asset_meta = universe[asset]
+                print("HL ASSET META", {"asset": asset, "asset_meta": asset_meta})
+        if isinstance(asset_meta, dict):
+                    tick_size = asset_meta.get("tickSize") or asset_meta.get("pxTick")
+                    price_decimals = asset_meta.get("priceDecimals") or asset_meta.get("pxDecimals")
+
+        print(
+            "HL round_price debug",
+            {
+                "symbol": symbol,
+                "coin": coin,
+                "asset": asset,
+                "tick_size": tick_size,
+                "price_decimals": price_decimals,
+                "input_price": price,
+            },
+        )
+
+        if tick_size is not None:
+            tick = float(tick_size)
+            if tick > 0:
+                snapped = round(price / tick) * tick
+                decimals = 0
+                tick_text = f"{tick:.12f}".rstrip("0")
+                if "." in tick_text:
+                    decimals = len(tick_text.split(".")[1])
+                final_price = round(snapped, decimals)
+                print("HL round_price snapped via tick", final_price)
+                return final_price
+
+        if price_decimals is not None:
+            final_price = round(price, int(price_decimals))
+            print("HL round_price snapped via decimals", final_price)
+            return final_price
+
+        fallback_price = round(price, 6)
+        print("HL round_price fallback", fallback_price)
+        return fallback_price    
+
 
     async def resolve_user_identity(self) -> tuple[str, str]:
         resolved_address = await self.resolve_user_address()

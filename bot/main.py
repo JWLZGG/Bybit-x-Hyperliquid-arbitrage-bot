@@ -22,6 +22,7 @@ from bot.database.repository import (
 )
 from bot.database.schema import initialize_database
 from bot.execution.router import submit_execution_intent
+from bot.execution.paper_trade_manager import reconcile_open_paper_trades
 from bot.monitoring.alerts import (
     send_bot_started_alert,
     send_disconnect_alert,
@@ -66,6 +67,8 @@ from bot.signal_generator.spread_strategy import (
     maybe_emit_trade_intent as maybe_emit_spread_trade_intent,
 )
 
+from bot.analytics.pnl import compute_paper_trade_summary
+from bot.database.paper_trade_repository import list_paper_trades
 
 class StartupPreflightError(RuntimeError):
     """Raised when the bot cannot determine usable paired capital at startup."""
@@ -216,8 +219,26 @@ async def _perform_startup_capital_preflight(
     )
     hyperliquid_resolved_user, hyperliquid_resolved_role = await hyperliquid_client.resolve_user_identity()
 
+    has_bybit_override = (
+        config.bybit_equity_override_usd is not None
+        or config.bybit_available_balance_override_usd is not None
+    )
+    has_hyperliquid_override = (
+        config.hyperliquid_equity_override_usd is not None
+        or config.hyperliquid_available_balance_override_usd is not None
+    )
+    simulated_capital_mode = (
+        raw_bybit_account.available_balance_usd <= 0
+        and raw_hyperliquid_account.available_balance_usd <= 0
+        and has_bybit_override
+        and has_hyperliquid_override
+    )
+
     logger.info(
-        "Startup capital preflight | raw_bybit_available=%s | raw_hyper_available=%s | effective_bybit_available=%s | effective_hyper_available=%s | paired_available=%s | hyperliquid_user=%s | hyperliquid_role=%s",
+        "Startup capital preflight | mode=%s | raw_bybit_available=%s | raw_hyper_available=%s "
+        "| effective_bybit_available=%s | effective_hyper_available=%s | paired_available=%s "
+        "| hyperliquid_user=%s | hyperliquid_role=%s",
+        "simulated" if simulated_capital_mode else "funded",
         raw_bybit_account.available_balance_usd,
         raw_hyperliquid_account.available_balance_usd,
         effective_bybit_account.available_balance_usd,
@@ -237,11 +258,21 @@ async def _perform_startup_capital_preflight(
         hyperliquid_resolved_role=hyperliquid_resolved_role,
     )
     if not issues:
-        logger.info("Startup capital preflight passed")
+        logger.info(
+            "Startup capital preflight passed | mode=%s",
+            "simulated" if simulated_capital_mode else "funded",
+        )
         return
 
     for index, issue in enumerate(issues, start=1):
-        logger.error("Startup capital preflight issue %s | %s", index, issue)
+        if simulated_capital_mode and "Both raw exchange balances are zero" in issue:
+            logger.warning(
+                "Startup capital preflight note %s | %s | simulated-capital overrides are active",
+                index,
+                issue,
+            )
+        else:
+            logger.error("Startup capital preflight issue %s | %s", index, issue)
 
     if config.pause_on_zero_effective_capital and account_state.paired_available_balance_usd <= 0:
         raise StartupPreflightError(
@@ -331,6 +362,31 @@ async def process_symbol_full(
         timed_call(hyperliquid_client.get_orderbook_depth_usd(symbol)),
     )
 
+    logger.info(
+       "Price snapshot %s | bybit_mark=%s | hyperliquid_mark=%s | bybit_last=%s | hyperliquid_last=%s",
+       symbol,
+       bybit_ticker.mark_price,
+       hyperliquid_ticker.mark_price,
+       bybit_ticker.last_price,
+       hyperliquid_ticker.last_price,
+    )
+
+    bybit_mark = float(bybit_ticker.mark_price)
+    bybit_index = float(bybit_ticker.index_price or 0.0)
+    hl_mark = float(hyperliquid_ticker.mark_price)
+
+    if bybit_index > 0:
+        bybit_mark_index_divergence_bp = abs(bybit_mark - bybit_index) / bybit_index * 10000
+    else:
+        bybit_mark_index_divergence_bp = 0.0
+
+    if bybit_index > 0 and bybit_mark_index_divergence_bp > 500:
+        logger.warning(
+           "Reconciliation event market_data_sanity | level=WARNING | message=%s Bybit mark/index divergence too large",
+           symbol,
+        )
+        return
+
     bybit_latency_ms = max(bybit_ticker_latency_ms, bybit_funding_latency_ms, bybit_depth_latency_ms)
     hyperliquid_latency_ms = max(
         hyperliquid_ticker_latency_ms,
@@ -411,6 +467,44 @@ async def process_symbol_full(
             {
                 "relative_diff": sanity_result.relative_diff,
                 "reason": sanity_result.reason,
+                "bybit_index_price": bybit_ticker.index_price,
+                "bybit_mark_price": bybit_ticker.mark_price,
+                "hyperliquid_mark_price": hyperliquid_ticker.mark_price,
+            },
+        )
+        insert_system_event(config.db_path, event)
+        log_reconciliation_event(logger, event)
+        return
+
+    if bybit_ticker.index_price > 0:
+        bybit_mark_index_gap = abs(bybit_ticker.mark_price - bybit_ticker.index_price) / bybit_ticker.index_price
+        if bybit_mark_index_gap > 0.10:
+            event = _system_event(
+                "WARNING",
+                "market_data_sanity",
+                f"{symbol} Bybit mark/index divergence too large",
+                {
+                    "bybit_mark_price": bybit_ticker.mark_price,
+                    "bybit_index_price": bybit_ticker.index_price,
+                    "relative_diff": bybit_mark_index_gap,
+                    "reason": "Bybit mark/index divergence exceeded 10%",
+                },
+            )
+            insert_system_event(config.db_path, event)
+            log_reconciliation_event(logger, event)
+            return
+
+    cross_exchange_mark_gap = abs(bybit_ticker.mark_price - hyperliquid_ticker.mark_price) / max(hyperliquid_ticker.mark_price, 1e-9)
+    if cross_exchange_mark_gap > 0.20:
+        event = _system_event(
+            "WARNING",
+            "market_data_sanity",
+            f"{symbol} cross-exchange mark divergence too large",
+            {
+                "bybit_mark_price": bybit_ticker.mark_price,
+                "hyperliquid_mark_price": hyperliquid_ticker.mark_price,
+                "relative_diff": cross_exchange_mark_gap,
+                "reason": "Cross-exchange mark divergence exceeded 20%",
             },
         )
         insert_system_event(config.db_path, event)
@@ -592,11 +686,28 @@ async def process_symbol_full(
         config,
         bybit_client=bybit_client,
         hyperliquid_client=hyperliquid_client,
+        db_path=config.db_path,
     )
     insert_execution_result(config.db_path, execution_result)
     log_execution_result(logger, execution_result)
 
     logger.info("DB path in use: %s", config.db_path)
+
+    latest_prices = {
+        symbol: {
+            "bybit_price": bybit_ticker.mark_price,
+            "hyperliquid_price": hyperliquid_ticker.mark_price,
+        }
+    }
+
+    closed_count = await reconcile_open_paper_trades(
+        db_path=config.db_path,
+        latest_prices=latest_prices,
+        max_hold_minutes=config.max_hold_time_minutes,
+    )
+
+    if closed_count > 0:
+        logger.info("Closed %s open paper trades for %s", closed_count, symbol)
 
     if execution_result.accepted:
         executed = replace(selected_opportunity, decision="executed", reject_reason=None)
@@ -615,7 +726,20 @@ async def process_symbol_full(
     else:
         accepted = replace(selected_opportunity, decision="accepted", reject_reason=execution_result.reason)
         insert_opportunity(config.db_path, accepted)
-        send_one_leg_risk_alert(logger, selected_intent.symbol, execution_result.reason)
+
+    if execution_result.status == "PAPER_SKIPPED_DUPLICATE":
+        logger.info(
+           "Duplicate paper trade skipped | symbol=%s | strategy=%s | reason=%s",
+           executable_intent.symbol,
+           executable_intent.strategy_type,
+           execution_result.reason,
+        )
+    else:
+        send_one_leg_risk_alert(
+           logger,
+           selected_intent.symbol,
+           execution_result.reason,
+        )
 
 async def process_symbol_degraded(
     config: Config,
@@ -657,6 +781,19 @@ async def process_symbol_degraded(
         ),
     )
 
+def log_paper_trade_summary(logger, db_path: str) -> None:
+    rows = list_paper_trades(db_path)
+    summary = compute_paper_trade_summary(rows)
+    logger.info(
+        "Paper summary | opened=%s | closed=%s | open=%s | realized_pnl_usd=%.4f | realized_pnl_bp=%.2f | win_rate=%.2f%% | avg_hold_mins=%.2f",
+        summary["opened"],
+        summary["closed"],
+        summary["open_count"],
+        summary["realized_pnl_usd"],
+        summary["realized_pnl_bp"],
+        summary["win_rate"] * 100.0,
+        summary["average_holding_minutes"],
+    )
 
 async def scanner_loop(
     logger,
@@ -667,6 +804,7 @@ async def scanner_loop(
     started_alert_sent = False
     capital_unavailable_alerted = False
 
+    cycle_count = 0
     while True:
         config = reload_config_if_needed()
         bybit_ok, hyperliquid_ok = await asyncio.gather(
@@ -824,6 +962,10 @@ async def scanner_loop(
         if config.run_once:
             break
 
+        cycle_count += 1
+
+        if cycle_count % 12 == 0:
+            log_paper_trade_summary(logger, config.db_path)
         await asyncio.sleep(config.poll_interval_seconds)
 
 
@@ -940,14 +1082,17 @@ async def run() -> None:
             logger=logger,
         )
 
-    scanner_task = asyncio.create_task(scanner_loop(logger, bybit_client, hyperliquid_client))
-    reconciler_task = asyncio.create_task(
-        reconciliation_loop(logger, bybit_client, hyperliquid_client)
+    scanner_task = asyncio.create_task(
+        scanner_loop(logger, bybit_client, hyperliquid_client)
     )
+ #   reconciler_task = asyncio.create_task(
+ #       reconciliation_loop(logger, bybit_client, hyperliquid_client)
+ #   )
 
     try:
-        await asyncio.gather(scanner_task, reconciler_task)
+        await asyncio.gather(scanner_task)
     finally:
+        scanner_task.cancel()
         if dashboard_runner is not None:
             await dashboard_runner.cleanup()
 

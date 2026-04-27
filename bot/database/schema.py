@@ -4,6 +4,58 @@ import sqlite3
 from pathlib import Path
 
 
+def initialize_schema(connection: sqlite3.Connection) -> None:
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            level TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            strategy_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            bybit_side TEXT NOT NULL,
+            hyperliquid_side TEXT NOT NULL,
+            entry_bybit_price REAL NOT NULL,
+            entry_hyperliquid_price REAL NOT NULL,
+            target_notional_usd REAL NOT NULL,
+            expected_net_bp REAL NOT NULL,
+            expected_gross_bp REAL NOT NULL,
+            total_cost_bp REAL NOT NULL,
+            entry_spread_bp REAL,
+            exit_bybit_price REAL,
+            exit_hyperliquid_price REAL,
+            closed_at TEXT,
+            realized_pnl_usd REAL,
+            realized_pnl_bp REAL,
+            close_reason TEXT
+        )
+        """
+    )
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_paper_trades_created_at ON paper_trades(created_at)"
+    )
+
+    connection.commit()
+
 def get_connection(database_path: str) -> sqlite3.Connection:
     Path(database_path).parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(database_path)
@@ -14,6 +66,7 @@ def get_connection(database_path: str) -> sqlite3.Connection:
 def initialize_database(database_path: str) -> None:
     connection = get_connection(database_path)
     try:
+        initialize_schema(connection)
         cursor = connection.cursor()
 
         cursor.execute(
