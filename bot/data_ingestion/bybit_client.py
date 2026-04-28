@@ -71,8 +71,6 @@ class BybitClient:
             raise ValueError(f"No Bybit ticker returned for symbol {symbol}")
 
         item = items[0]
-        if symbol.upper() == "SOLUSDT":
-            print("BYBIT SOL TICKER RAW ITEM", item)
         return BybitTickerSnapshot(
             symbol=item["symbol"],
             last_price=float(item["lastPrice"]),
@@ -91,8 +89,6 @@ class BybitClient:
             raise ValueError(f"No Bybit funding history returned for symbol {symbol}")
 
         item = items[0]
-        if symbol.upper() == "SOLUSDT":
-            print("BYBIT SOL FUNDING RAW ITEM", item)
         raw_rate = float(item["fundingRate"])
         ts_ms = int(item["fundingRateTimestamp"])
         observed_at = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -114,16 +110,12 @@ class BybitClient:
         result = payload.get("result", {})
         bids = result.get("b", [])
         asks = result.get("a", [])
-        if symbol.upper() == "SOLUSDT":
-            print("BYBIT SOL ORDERBOOK RAW RESULT", result)
         return self._sum_depth_usd(bids) + self._sum_depth_usd(asks)
 
     async def get_instrument_meta(self, symbol: str) -> dict[str, Any]:
        normalized_symbol = symbol.upper()
        cached = self._instrument_cache.get(normalized_symbol)
        if cached is not None:
-           if normalized_symbol == "SOLUSDT":
-                print("BYBIT SOL INSTRUMENT META (cached)", cached)
            return cached
 
        payload = await self._public_get(
@@ -133,9 +125,6 @@ class BybitClient:
        items = payload.get("result", {}).get("list", [])
        if not items:
           raise ValueError(f"No Bybit instrument info returned for symbol {symbol}")
-
-       if normalized_symbol == "SOLUSDT":
-          print("BYBIT SOL INSTRUMENT META", items[0])
 
        self._instrument_cache[normalized_symbol] = items[0]
        return items[0]

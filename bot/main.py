@@ -5,6 +5,18 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from time import perf_counter
 
+from bot.database.paper_trade_repository import get_open_paper_trades
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class CycleSymbolResult:
+    symbol: str
+    decision: str
+    strategy_type: str | None = None
+    gross_bp: float | None = None
+    net_bp: float | None = None
+    reason: str | None = None
+
 from bot.config.config import Config, load_config, reload_config_if_needed
 from bot.data_ingestion.bybit_client import BybitClient
 from bot.data_ingestion.hyperliquid_client import HyperliquidClient
@@ -345,7 +357,7 @@ async def process_symbol_full(
     hyperliquid_client: HyperliquidClient,
     account_state,
     market_state: MarketStateTracker,
-) -> None:
+) -> CycleSymbolResult:
     (
         (bybit_ticker, bybit_ticker_latency_ms),
         (hyperliquid_ticker, hyperliquid_ticker_latency_ms),
@@ -382,10 +394,14 @@ async def process_symbol_full(
 
     if bybit_index > 0 and bybit_mark_index_divergence_bp > 500:
         logger.warning(
-           "Reconciliation event market_data_sanity | level=WARNING | message=%s Bybit mark/index divergence too large",
-           symbol,
+            "Reconciliation event market_data_sanity | level=WARNING | message=%s Bybit mark/index divergence too large",
+            symbol,
         )
-        return
+        return CycleSymbolResult(
+            symbol=symbol,
+            decision="rejected_market_data",
+            reason="Bybit mark/index divergence too large",
+        )
 
     bybit_latency_ms = max(bybit_ticker_latency_ms, bybit_funding_latency_ms, bybit_depth_latency_ms)
     hyperliquid_latency_ms = max(
@@ -474,7 +490,11 @@ async def process_symbol_full(
         )
         insert_system_event(config.db_path, event)
         log_reconciliation_event(logger, event)
-        return
+        return CycleSymbolResult(
+            symbol=symbol,
+            decision="rejected_market_data",
+            reason=sanity_result.reason,
+        )
 
     if bybit_ticker.index_price > 0:
         bybit_mark_index_gap = abs(bybit_ticker.mark_price - bybit_ticker.index_price) / bybit_ticker.index_price
@@ -492,7 +512,11 @@ async def process_symbol_full(
             )
             insert_system_event(config.db_path, event)
             log_reconciliation_event(logger, event)
-            return
+            return CycleSymbolResult(
+                symbol=symbol,
+                decision="rejected_market_data",
+                reason="Bybit mark/index divergence exceeded 10%",
+            )
 
     cross_exchange_mark_gap = abs(bybit_ticker.mark_price - hyperliquid_ticker.mark_price) / max(hyperliquid_ticker.mark_price, 1e-9)
     if cross_exchange_mark_gap > 0.20:
@@ -509,7 +533,11 @@ async def process_symbol_full(
         )
         insert_system_event(config.db_path, event)
         log_reconciliation_event(logger, event)
-        return
+        return CycleSymbolResult(
+            symbol=symbol,
+            decision="rejected_market_data",
+            reason="Cross-exchange mark divergence exceeded 20%",
+        )
 
     proposed_notional = calculate_safe_notional(
         available_capital_usd=account_state.paired_available_balance_usd,
@@ -598,7 +626,29 @@ async def process_symbol_full(
             log_opportunity(logger, deferred)
 
     if selected is None:
-        return
+        observed_opportunities = [op for op, _intent in opportunities]
+
+        best_observed = None
+        for op in observed_opportunities:
+            if best_observed is None:
+                best_observed = op
+            elif (op.expected_net_bp or float("-inf")) > (best_observed.expected_net_bp or float("-inf")):
+                best_observed = op
+
+        if best_observed is not None:
+            return CycleSymbolResult(
+                symbol=symbol,
+                decision=best_observed.decision,
+                strategy_type=best_observed.strategy_type,
+                gross_bp=best_observed.gross_expected_bp,
+                net_bp=best_observed.expected_net_bp,
+                reason=best_observed.reject_reason,
+            )
+        return CycleSymbolResult(
+            symbol=symbol,
+            decision="no_opportunity",
+            reason="No executable opportunity selected",
+        )
 
     selected_opportunity, selected_intent = selected
     exchange_health = _build_exchange_health(bybit_latency_ms, hyperliquid_latency_ms)
@@ -663,7 +713,14 @@ async def process_symbol_full(
                         },
                     ),
                 )
-            return
+            return CycleSymbolResult(
+                symbol=symbol,
+                decision="rejected_risk",
+                strategy_type=selected_intent.strategy_type,
+                gross_bp=selected_opportunity.gross_expected_bp,
+                net_bp=selected_opportunity.expected_net_bp,
+                reason=rejected.reject_reason,
+            )
     elif (
         risk_result.suggested_notional is not None
         and risk_result.suggested_notional < selected_intent.target_notional_usd
@@ -724,8 +781,12 @@ async def process_symbol_full(
         persisted_position_pair = replace(position_pair, id=position_pair_id)
         send_trade_entered_alert(logger, persisted_position_pair)
     else:
-        accepted = replace(selected_opportunity, decision="accepted", reject_reason=execution_result.reason)
-        insert_opportunity(config.db_path, accepted)
+        not_executed = replace(
+            selected_opportunity,
+            decision="execution_not_accepted",
+            reject_reason=execution_result.reason,
+        )
+        insert_opportunity(config.db_path, not_executed)
 
     if execution_result.status == "PAPER_SKIPPED_DUPLICATE":
         logger.info(
@@ -740,6 +801,16 @@ async def process_symbol_full(
            selected_intent.symbol,
            execution_result.reason,
         )
+    final_decision = "accepted" if execution_result.accepted else "execution_not_accepted"
+
+    return CycleSymbolResult(
+        symbol=symbol,
+        decision=final_decision,
+        strategy_type=selected_opportunity.strategy_type,
+        gross_bp=selected_opportunity.gross_expected_bp,
+        net_bp=selected_opportunity.expected_net_bp,
+        reason=execution_result.reason if not execution_result.accepted else None,
+    )
 
 async def process_symbol_degraded(
     config: Config,
@@ -806,6 +877,13 @@ async def scanner_loop(
 
     cycle_count = 0
     while True:
+        cycle_summary = {
+            "symbols_scanned": 0,
+            "accepted": 0,
+            "near_miss": 0,
+            "rejected": 0,
+        }
+        best_opportunity: CycleSymbolResult | None = None
         config = reload_config_if_needed()
         bybit_ok, hyperliquid_ok = await asyncio.gather(
             bybit_client.healthcheck(),
@@ -932,27 +1010,46 @@ async def scanner_loop(
                 )
                 capital_unavailable_alerted = False
 
-            for symbol in config.symbols:
-                try:
-                    await process_symbol_full(
-                        config=config,
-                        logger=logger,
-                        symbol=symbol,
-                        bybit_client=bybit_client,
-                        hyperliquid_client=hyperliquid_client,
-                        account_state=account_state,
-                        market_state=market_state,
-                    )
-                except Exception as exc:
-                    insert_system_event(
-                        config.db_path,
-                        _system_event(
-                            "ERROR",
-                            "process_symbol_failure",
-                            f"Failed processing {symbol}: {exc}",
-                        ),
-                    )
-                    logger.exception("Failed processing symbol %s: %s", symbol, exc)
+        for symbol in config.symbols:
+                  try:
+                      result = await process_symbol_full(
+                          config=config,
+                          logger=logger,
+                          symbol=symbol,
+                          bybit_client=bybit_client,
+                          hyperliquid_client=hyperliquid_client,
+                          account_state=account_state,
+                          market_state=market_state,
+                      )
+
+                      cycle_summary["symbols_scanned"] += 1
+
+                      if result.decision in {"accepted", "executed"}:
+                          cycle_summary["accepted"] += 1
+                      elif result.decision == "near_miss":
+                          cycle_summary["near_miss"] += 1
+                      else:
+                          cycle_summary["rejected"] += 1
+
+                      if result.net_bp is not None:
+                          if best_opportunity is None or (
+                              best_opportunity.net_bp is None or result.net_bp > best_opportunity.net_bp
+                          ):
+                              best_opportunity = result
+
+                  except Exception as exc:
+                      cycle_summary["symbols_scanned"] += 1
+                      cycle_summary["rejected"] += 1
+                      insert_system_event(
+                          config.db_path,
+                          _system_event(
+                              "ERROR",
+                              "process_symbol_failure",
+                              f"Failed processing {symbol}: {exc}",
+                          ),
+                      )
+                      logger.exception("Failed processing symbol %s: %s", symbol, exc)                       
+
         else:
             clear_live_fee_overrides()
         if (not hyperliquid_ok) and config.allow_degraded_mode and bybit_ok:
@@ -964,8 +1061,33 @@ async def scanner_loop(
 
         cycle_count += 1
 
+        open_paper_count = len(get_open_paper_trades(config.db_path))
+
+        logger.info(
+            "Cycle summary | scanned=%s | accepted=%s | near_miss=%s | rejected=%s | open_paper=%s",
+            cycle_summary["symbols_scanned"],
+            cycle_summary["accepted"],
+            cycle_summary["near_miss"],
+            cycle_summary["rejected"],
+            open_paper_count,
+        )
+
+        if best_opportunity is not None:
+            logger.info(
+                "Best opportunity this cycle | symbol=%s | strategy=%s | gross=%.2f bp | net=%.2f bp | decision=%s | reason=%s",
+                best_opportunity.symbol,
+                best_opportunity.strategy_type,
+                best_opportunity.gross_bp if best_opportunity.gross_bp is not None else 0.0,
+                best_opportunity.net_bp if best_opportunity.net_bp is not None else 0.0,
+                best_opportunity.decision,
+                best_opportunity.reason,
+            )
+
+        cycle_count += 1
+
         if cycle_count % 12 == 0:
             log_paper_trade_summary(logger, config.db_path)
+
         await asyncio.sleep(config.poll_interval_seconds)
 
 
