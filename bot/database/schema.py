@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -224,7 +225,40 @@ def initialize_database(database_path: str) -> None:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cycle_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                scanned_count INTEGER NOT NULL,
+                accepted_count INTEGER NOT NULL,
+                near_miss_count INTEGER NOT NULL,
+                rejected_count INTEGER NOT NULL,
+                open_paper_count INTEGER NOT NULL,
+                best_symbol TEXT,
+                best_strategy_type TEXT,
+                best_gross_bp REAL,
+                best_net_bp REAL,
+                best_decision TEXT,
+                best_reason TEXT
+            )
+            """
+        )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS best_opportunity_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                strategy_type TEXT,
+                gross_bp REAL,
+                net_bp REAL,
+                decision TEXT,
+                reason TEXT
+            )
+            """
+        )
         _ensure_column(cursor, "position_pairs", "delta_imbalance_bp", "REAL DEFAULT 0")
         connection.commit()
     finally:
@@ -241,3 +275,95 @@ def _ensure_column(
     existing_columns = {row["name"] if isinstance(row, sqlite3.Row) else row[1] for row in cursor.fetchall()}
     if column_name not in existing_columns:
         cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+def insert_cycle_summary(
+    db_path: str,
+    scanned_count: int,
+    accepted_count: int,
+    near_miss_count: int,
+    rejected_count: int,
+    open_paper_count: int,
+    best_symbol: str | None,
+    best_strategy_type: str | None,
+    best_gross_bp: float | None,
+    best_net_bp: float | None,
+    best_decision: str | None,
+    best_reason: str | None,
+) -> None:
+    connection = get_connection(db_path)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO cycle_summaries (
+                observed_at,
+                scanned_count,
+                accepted_count,
+                near_miss_count,
+                rejected_count,
+                open_paper_count,
+                best_symbol,
+                best_strategy_type,
+                best_gross_bp,
+                best_net_bp,
+                best_decision,
+                best_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                scanned_count,
+                accepted_count,
+                near_miss_count,
+                rejected_count,
+                open_paper_count,
+                best_symbol,
+                best_strategy_type,
+                best_gross_bp,
+                best_net_bp,
+                best_decision,
+                best_reason,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def insert_best_opportunity_snapshot(
+    db_path: str,
+    symbol: str,
+    strategy_type: str | None,
+    gross_bp: float | None,
+    net_bp: float | None,
+    decision: str,
+    reason: str | None,
+) -> None:
+    connection = get_connection(db_path)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO best_opportunity_snapshots (
+                observed_at,
+                symbol,
+                strategy_type,
+                gross_bp,
+                net_bp,
+                decision,
+                reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                symbol,
+                strategy_type,
+                gross_bp,
+                net_bp,
+                decision,
+                reason,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
