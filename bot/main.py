@@ -17,6 +17,13 @@ class CycleSymbolResult:
     net_bp: float | None = None
     reason: str | None = None
 
+from bot.analytics.reporting import (
+    get_best_symbol_breakdown,
+    get_cycle_summary_stats,
+    get_latest_paper_summary_row,
+    get_near_miss_breakdown,
+)
+
 from bot.config.config import Config, load_config, reload_config_if_needed
 from bot.data_ingestion.bybit_client import BybitClient
 from bot.data_ingestion.hyperliquid_client import HyperliquidClient
@@ -32,7 +39,11 @@ from bot.database.repository import (
     insert_system_event,
     update_position_pair_status,
 )
-from bot.database.schema import initialize_database
+from bot.database.schema import (
+    initialize_database,
+    insert_best_opportunity_snapshot,
+    insert_cycle_summary,
+)
 from bot.execution.router import submit_execution_intent
 from bot.execution.paper_trade_manager import reconcile_open_paper_trades
 from bot.monitoring.alerts import (
@@ -866,6 +877,55 @@ def log_paper_trade_summary(logger, db_path: str) -> None:
         summary["average_holding_minutes"],
     )
 
+def log_phase4_report_snapshot(logger, db_path: str) -> None:
+    cycle_stats = get_cycle_summary_stats(db_path, limit=100)
+    best_breakdown = get_best_symbol_breakdown(db_path, limit=5)
+    near_miss_breakdown = get_near_miss_breakdown(db_path, limit=5)
+    paper_stats = get_latest_paper_summary_row(db_path)
+
+    logger.info(
+        "Phase4 snapshot | cycles=%s | avg_scanned=%.2f | avg_accepted=%.2f | avg_near_miss=%.2f | avg_best_net_bp=%.2f",
+        cycle_stats["cycles"],
+        cycle_stats["avg_scanned"],
+        cycle_stats["avg_accepted"],
+        cycle_stats["avg_near_miss"],
+        cycle_stats["avg_best_net_bp"],
+    )
+
+    if best_breakdown:
+        top = best_breakdown[0]
+        logger.info(
+            "Phase4 top-best-symbol | symbol=%s | strategy=%s | frequency=%s | avg_gross_bp=%.2f | avg_net_bp=%.2f",
+            top["best_symbol"],
+            top["best_strategy_type"],
+            top["frequency"],
+            top["avg_gross_bp"] or 0.0,
+            top["avg_net_bp"] or 0.0,
+        )
+
+    if near_miss_breakdown:
+        top_nm = near_miss_breakdown[0]
+        logger.info(
+            "Phase4 top-near-miss | symbol=%s | strategy=%s | count=%s | avg_gross_bp=%.2f | avg_net_bp=%.2f | best_net_bp=%.2f",
+            top_nm["symbol"],
+            top_nm["strategy_type"],
+            top_nm["near_miss_count"],
+            top_nm["avg_gross_bp"] or 0.0,
+            top_nm["avg_net_bp"] or 0.0,
+            top_nm["best_net_bp"] or 0.0,
+        )
+
+    logger.info(
+        "Phase4 paper-stats | opened=%s | closed=%s | open=%s | realized_pnl_usd=%.4f | avg_realized_pnl_bp=%.2f | win_rate=%.2f%% | avg_hold_mins=%.2f",
+        paper_stats["opened"],
+        paper_stats["closed"],
+        paper_stats["open_count"],
+        paper_stats["realized_pnl_usd"],
+        paper_stats["avg_realized_pnl_bp"],
+        paper_stats["win_rate"] * 100.0,
+        paper_stats["avg_hold_mins"],
+    )
+
 async def scanner_loop(
     logger,
     bybit_client: BybitClient,
@@ -1064,12 +1124,28 @@ async def scanner_loop(
         open_paper_count = len(get_open_paper_trades(config.db_path))
 
         logger.info(
-            "Cycle summary | scanned=%s | accepted=%s | near_miss=%s | rejected=%s | open_paper=%s",
+            "Cycle summary | scanned=%s | accepted=%s | near_miss=%s | rejected=%s | open_paper=%s | best_net_bp=%s",
             cycle_summary["symbols_scanned"],
             cycle_summary["accepted"],
             cycle_summary["near_miss"],
             cycle_summary["rejected"],
             open_paper_count,
+            best_opportunity.net_bp if best_opportunity else None
+        )
+     
+        insert_cycle_summary(
+            config.db_path,
+            scanned_count=cycle_summary["symbols_scanned"],
+            accepted_count=cycle_summary["accepted"],
+            near_miss_count=cycle_summary["near_miss"],
+            rejected_count=cycle_summary["rejected"],
+            open_paper_count=open_paper_count,
+            best_symbol=best_opportunity.symbol if best_opportunity else None,
+            best_strategy_type=best_opportunity.strategy_type if best_opportunity else None,
+            best_gross_bp=best_opportunity.gross_bp if best_opportunity else None,
+            best_net_bp=best_opportunity.net_bp if best_opportunity else None,
+            best_decision=best_opportunity.decision if best_opportunity else None,
+            best_reason=best_opportunity.reason if best_opportunity else None,
         )
 
         if best_opportunity is not None:
@@ -1083,10 +1159,21 @@ async def scanner_loop(
                 best_opportunity.reason,
             )
 
+            insert_best_opportunity_snapshot(
+                config.db_path,
+                symbol=best_opportunity.symbol,
+                strategy_type=best_opportunity.strategy_type,
+                gross_bp=best_opportunity.gross_bp,
+                net_bp=best_opportunity.net_bp,
+                decision=best_opportunity.decision,
+                reason=best_opportunity.reason,
+            )
+
         cycle_count += 1
 
         if cycle_count % 12 == 0:
             log_paper_trade_summary(logger, config.db_path)
+            log_phase4_report_snapshot(logger, config.db_path)
 
         await asyncio.sleep(config.poll_interval_seconds)
 

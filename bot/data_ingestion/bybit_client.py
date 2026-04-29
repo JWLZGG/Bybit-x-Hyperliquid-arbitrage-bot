@@ -154,7 +154,6 @@ class BybitClient:
             raise ValueError("No Bybit wallet balance returned")
 
         wallet = items[0]
-        print("BYBIT WALLET SNAPSHOT RAW", wallet)
         return AccountSnapshot(
             exchange="bybit",
             equity_usd=self._extract_equity_usd(wallet),
