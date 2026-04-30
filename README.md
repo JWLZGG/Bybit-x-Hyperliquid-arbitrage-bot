@@ -109,14 +109,18 @@ http://localhost:8080
 ##Docker Usage
 
 ###Start in background
+
 ```bash
 docker compose up --build -d
 ```
+
 ###Follow logs
+
 ```bash
 docker compose logs --tail=200 -f
 ```
 ###Stop
+
 ```bash
 docker compose down
 ```
