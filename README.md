@@ -256,7 +256,7 @@ No `TradeIntent` should be emitted unless this check passes.
 
 This is one of the most important safety features in the MVP.
 
-##Opportunity Classification
+## Opportunity Classification
 
 The bot persists scanner decisions and execution outcomes into SQLite.
 
@@ -276,7 +276,7 @@ This supports later reporting on:
 - executed opportunities
 - near-miss opportunities worth further study
 
-##Paper Trading and Reporting
+## Paper Trading and Reporting
 
 The MVP now includes:
 
@@ -300,7 +300,7 @@ This makes the system suitable for:
 - internal reporting to CRA / Horizon One
 - deciding whether live deployment is justified
 
-##Dashboard Usage
+## Dashboard Usage
 
 The monitoring app lives in:
 
@@ -310,22 +310,22 @@ bot/monitoring/dashboard.py
 
 It exposes operator views for:
 
-###Health
+### Health
 - bot state
 - exchange status
 - observed latency
 - paused / running state
 
-###Opportunities
+### Opportunities
 - accepted
 - rejected
 - near-misses
 - latest gross and net basis points
-###Positions
+### Positions
 - open or degraded pairs
 - current PnL
 - delta mismatch basis points
-###Trades / Events
+### Trades / Events
 - recent executions
 - reconciliation events
 - health and pause events
@@ -339,7 +339,7 @@ Useful endpoints:
 - `/api/events`
 - `/api/executions`
 
-##Testing
+## Testing
 
 Run the full test suite with:
 ```bash
@@ -360,13 +360,13 @@ Representative unit tests include:
 - `tests/unit/test_funding_strategy.py`
 - `tests/unit/test_risk_checks.py`
 
-###Coverage position
+### Coverage position
 
 The codebase is now materially more testable than earlier in the build because strategy logic, execution flow, reconciliation, and reporting are more clearly separated. Additional integration and failure-path testing is recommended before any persistent live deployment.
 
-##VPS Deployment Checklist
+## VPS Deployment Checklist
 
-###Phase 1 infrastructure
+### Phase 1 infrastructure
 - provision VPS and record public IP
 - enforce SSH key-only auth
 - disable password login
@@ -384,7 +384,7 @@ python scripts/latency_check.py
 - start the bot with Docker Compose
 - confirm restart behavior and dashboard reachability
 
-##Known Limitations
+## Known Limitations
 - Execution remains polling-based in bot/execution/pair_executor.py rather than websocket-confirmed.
 - Hyperliquid fill attribution still derives average fill price from recent fills filtered by oid; workable for MVP, but should be hardened before larger live deployment.
 - Bybit order-state confirmation still relies on REST polling rather than private websocket streams.
@@ -392,14 +392,14 @@ python scripts/latency_check.py
 - Current major-pair testing did not demonstrate repeated positive net edge after realistic costs.
 - Live deployment should therefore be treated as gated, not assumed.
 
-##Recommendations / Next Steps
+## Recommendations / Next Steps
 1. Focus strategy work on the branch closest to viability in current observations.
 2. Expand beyond the initial major-pair universe.
 3. Improve execution quality and effective fee tier.
 4. Use the first live deployment only as a tightly controlled canary.
 5. Extend automated testing around integration failure modes and execution edge cases.
 
-##Bottom Line
+## Bottom Line
 
 This MVP successfully answers a critical desk-level question:
 
