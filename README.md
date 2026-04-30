@@ -67,7 +67,7 @@ tests/
   unit/
 ```
 
-##Quick Start
+## Quick Start
 1. Copy environment template
 ```bash
 cp .env.example .env
@@ -119,7 +119,11 @@ docker compose up --build -d
 ```bash
 docker compose logs --tail=200 -f
 ```
+
 ###Stop
+=======
+
+### Stop
 
 ```bash
 docker compose down
@@ -134,6 +138,7 @@ The compose setup mounts:
 and uses restart policy `unless-stopped`.
 
 ## Runtime Modes
+
 ### Paper / simulated mode
 
 Recommended default for evaluation and reporting.
