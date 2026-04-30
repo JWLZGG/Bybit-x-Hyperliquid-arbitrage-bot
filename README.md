@@ -1,31 +1,58 @@
 # Delta-Neutral Arbitrage Bot MVP
 
-Async Python MVP for delta-neutral perpetual futures arbitrage between Bybit and Hyperliquid. The bot now has a centralized config layer, a mandatory net-positive trade gate, opportunity and near-miss persistence, live private account integrations, maker-first paired execution, live reconciliation hooks, and a lightweight dashboard.
+Async Python MVP for delta-neutral perpetual futures arbitrage between **Bybit** and **Hyperliquid**.
 
-## Current Project Status
+The bot continuously scans supported symbols, evaluates **funding arbitrage** and **price-spread convergence** opportunities, applies a **mandatory net-positive gate** plus pre-trade risk checks and routes opportunities into either **paper execution** or guarded live execution paths.
 
-- Phase: Phase 2 implementation in progress
-- Working today:
-  - centralized runtime config in [bot/config/config.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/config/config.py)
-  - funding and spread opportunity evaluation
-  - mandatory net-positive gate in [bot/risk_engine/net_positive.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/risk_engine/net_positive.py)
-  - structured pre-trade risk checks in [bot/risk_engine/checks.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/risk_engine/checks.py)
-  - SQLite schema/repository for opportunities, positions, executions, and system events
-  - dashboard and alert/logging surface
-  - live private account state on Bybit and Hyperliquid
-  - live maker-fee fetches for the net-positive gate
-  - maker-first paired order routing with cancel/unwind handling
-  - live position reconciliation loop
-- Not complete yet:
-  - websocket ingestion
-  - backtesting, paper trading, and live deployment reporting
-  - production-grade alert delivery
-  - full fill-stream/websocket execution confirmation
+This MVP is designed to answer two questions safely:
+
+1. **Is there a tradable cross-venue edge after realistic costs?**
+2. **If not, can the system correctly suppress uneconomic live deployment?**
+
+---
+
+## Final MVP Status
+
+### Completed
+- centralized runtime config in `bot/config/config.py`
+- Bybit and Hyperliquid market-data ingestion
+- live private account-state integration
+- live maker-fee fetches for cost modeling
+- funding-arbitrage and spread-convergence opportunity evaluation
+- mandatory net-positive gate in `bot/risk_engine/net_positive.py`
+- structured pre-trade risk checks in `bot/risk_engine/checks.py`
+- SQLite persistence for:
+  - opportunities
+  - position pairs
+  - execution results
+  - system events
+  - market snapshots
+  - funding snapshots
+  - paper trades
+  - cycle summaries
+  - best-opportunity snapshots
+- paper execution path with duplicate suppression
+- reconciliation loop and realized PnL tracking
+- cycle-level summaries and best-opportunity reporting
+- Phase 4 snapshot reporting
+- dashboard and logging / alert surface
+- maker-first paired live execution routing with cancel / unwind handling
+
+### Key final finding
+The MVP is technically operational and report-complete, but under tested **major-pair conditions** on **BTCUSDT, ETHUSDT and SOLUSDT** between Bybit and Hyperliquid, observed gross edge did **not** overcome realistic modeled execution costs.
+
+That is an important successful outcome for a guarded trading system: the bot correctly identified near-miss opportunities and **suppressed uneconomic live execution**.
+
+### What this means
+This repository should be understood as a **working arbitrage research and execution framework** with paper-trading validation and live-deployment guardrails, rather than a claim of immediate production profitability under the tested market regime.
+
+---
 
 ## Repository Layout
 
 ```text
 bot/
+  analytics/
   config/
   data_ingestion/
   database/
@@ -40,87 +67,171 @@ tests/
   unit/
 ```
 
-## Quick Start
+##Quick Start
+1. Copy environment template
+```bash
+cp .env.example .env
+```
 
-1. Copy `.env.example` to `.env` and populate credentials.
-2. Create and activate a virtual environment.
-3. Install dependencies.
-4. Run tests.
-5. Start the bot.
+Populate credentials and runtime values in .env.
+
+2. Create and activate a virtual environment
+
+Windows PowerShell
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pytest
-python -m bot.main
 ```
 
-The dashboard will be available at `http://localhost:8080` by default.
+Linux / macOS
 
-On startup, the bot now runs a capital preflight before entering the scan loop. If usable paired capital cannot be resolved, startup exits with a clear error explaining exactly which inputs are missing, including likely fixes such as:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+3. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+4. Run tests
+```bash
+pytest
+```
+5. Start the bot
+```bash
+python -m bot.main
+```
+The dashboard is available at:
+```text
+http://localhost:8080
+```
+##Docker Usage
+###Start in background
+```bash
+docker compose up --build -d
+```
+###Follow logs
+```bash
+docker compose logs --tail=200 -f
+```
+###Stop
+```bash
+docker compose down
+```
 
-- funding the Bybit `UNIFIED` account behind the configured API key
+The compose setup mounts:
+
+- `./.env`
+- `./logs`
+- `./data`
+
+and uses restart policy `unless-stopped`.
+
+##Runtime Modes
+###Paper / simulated mode
+
+Recommended default for evaluation and reporting.
+
+Typical settings:
+
+- `LIVE_EXECUTION_ENABLED=false`
+- optional exchange balance overrides for simulation
+- paper execution and reconciliation enabled
+
+###Live mode
+
+Enable only when:
+
+- both exchanges are correctly funded
+- credentials are verified
+- expected net edge is positive in current market conditions
+- notional limits are reduced for a canary deployment
+- reporting confirms live opportunities are clearing cost assumptions
+
+##Startup Capital Preflight
+
+On startup, the bot performs a capital preflight before entering the scan loop.
+
+If usable paired capital cannot be resolved, startup exits or pauses with a clear explanation of what is missing, including likely fixes such as:
+
+- funding the Bybit UNIFIED account behind the configured API key
 - setting `HYPERLIQUID_ACCOUNT_ADDRESS` or `HYPERLIQUID_VAULT_ADDRESS`
 - setting `BYBIT_AVAILABLE_BALANCE_OVERRIDE_USD`
 - setting `HYPERLIQUID_AVAILABLE_BALANCE_OVERRIDE_USD`
 
-## Config Parameters
+This behaviour is intentional and helps prevent invalid $0 trade attempts.
 
-The single source of truth is [bot/config/config.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/config/config.py). Use `load_config()` for initial load and `reload_config_if_needed()` for lightweight hot reload.
+##Configuration
 
-Core runtime parameters:
+The single source of truth is:
 
-- Exchange environment settings:
-  - `ENVIRONMENT`
-  - `BYBIT_REST_URL`
-  - `HYPERLIQUID_REST_URL`
-  - `BYBIT_ACCOUNT_TYPE`
-  - `BYBIT_SETTLE_COIN`
-  - `BYBIT_RECV_WINDOW_MS`
-  - `BYBIT_EQUITY_OVERRIDE_USD`
-  - `BYBIT_AVAILABLE_BALANCE_OVERRIDE_USD`
-  - `BYBIT_MARGIN_USED_OVERRIDE_USD`
-  - `HYPERLIQUID_VAULT_ADDRESS`
-  - `HYPERLIQUID_ACCOUNT_ADDRESS`
-  - `HYPERLIQUID_EQUITY_OVERRIDE_USD`
-  - `HYPERLIQUID_AVAILABLE_BALANCE_OVERRIDE_USD`
-  - `HYPERLIQUID_MARGIN_USED_OVERRIDE_USD`
-- Symbols:
-  - `SYMBOLS`
-- Fees and return controls:
-  - `BYBIT_MAKER_FEE_BP`
-  - `HYPERLIQUID_MAKER_FEE_BP`
-  - `SLIPPAGE_BUFFER_BP`
-  - `SAFETY_MARGIN_BP`
-  - `MIN_NET_EXPECTED_RETURN_BP`
-- Strategy thresholds:
-  - `MIN_GROSS_8H_FUNDING_DIFF_BP`
-  - `MIN_GROSS_ENTRY_SPREAD_BP`
-  - `EXPECTED_CONVERGENCE_PCT`
-  - `MAX_HOLD_TIME_MINUTES`
-- Risk controls:
-  - `MAX_POSITION_NOTIONAL_USD`
-  - `MAX_MARGIN_UTILIZATION`
-  - `LATENCY_GUARD_MS`
-  - `VOLATILITY_SPIKE_PCT_1M`
-  - `LIQUIDITY_DEPTH_FRACTION_LIMIT`
-  - `MIN_MARGIN_RATIO_PCT`
-  - `RECONCILIATION_INTERVAL_SECONDS`
-  - `EXECUTION_ORDER_TIMEOUT_SECONDS`
-  - `EXECUTION_STATUS_POLL_INTERVAL_SECONDS`
-  - `PAUSE_ON_ZERO_EFFECTIVE_CAPITAL`
-- Dashboard and storage:
-  - `DASHBOARD_HOST`
-  - `DASHBOARD_PORT`
-  - `DATABASE_PATH`
-  - `LOG_FILE_PATH`
+```text
+bot/config/config.py
+```
 
-## Mandatory Net-Positive Gate
+Use:
 
-The final trade gate lives in [bot/risk_engine/net_positive.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/risk_engine/net_positive.py).
+- `load_config()` for initial load
+- `reload_config_if_needed()` for lightweight hot reload
 
-Key functions:
+##Core runtime parameters
+
+###Exchange environment
+- `ENVIRONMENT`
+- `BYBIT_REST_URL`
+- `HYPERLIQUID_REST_URL`
+- `BYBIT_ACCOUNT_TYPE`
+- `BYBIT_SETTLE_COIN`
+- `BYBIT_RECV_WINDOW_MS`
+- `BYBIT_EQUITY_OVERRIDE_USD`
+- `BYBIT_AVAILABLE_BALANCE_OVERRIDE_USD`
+- `BYBIT_MARGIN_USED_OVERRIDE_USD`
+- `HYPERLIQUID_VAULT_ADDRESS`
+- `HYPERLIQUID_ACCOUNT_ADDRESS`
+- `HYPERLIQUID_EQUITY_OVERRIDE_USD`
+- `HYPERLIQUID_AVAILABLE_BALANCE_OVERRIDE_USD`
+- `HYPERLIQUID_MARGIN_USED_OVERRIDE_USD`
+
+###Symbols
+- `SYMBOLS`
+###Fees and return controls
+- `BYBIT_MAKER_FEE_BP`
+- `HYPERLIQUID_MAKER_FEE_BP`
+- `SLIPPAGE_BUFFER_BP`
+- `SAFETY_MARGIN_BP`
+- `MIN_NET_EXPECTED_RETURN_BP`
+###Strategy thresholds
+- `MIN_GROSS_8H_FUNDING_DIFF_BP`
+- `MIN_GROSS_ENTRY_SPREAD_BP`
+- `EXPECTED_CONVERGENCE_PCT`
+- `MAX_HOLD_TIME_MINUTES`
+###Risk controls
+- `MAX_POSITION_NOTIONAL_USD`
+- `MAX_MARGIN_UTILIZATION`
+- `LATENCY_GUARD_MS`
+- `VOLATILITY_SPIKE_PCT_1M`
+- `LIQUIDITY_DEPTH_FRACTION_LIMIT`
+- `MIN_MARGIN_RATIO_PCT`
+- `RECONCILIATION_INTERVAL_SECONDS`
+- `EXECUTION_ORDER_TIMEOUT_SECONDS`
+- `EXECUTION_STATUS_POLL_INTERVAL_SECONDS`
+- `PAUSE_ON_ZERO_EFFECTIVE_CAPITAL`
+###Dashboard and storage
+- `DASHBOARD_HOST`
+- `DASHBOARD_PORT`
+- `DATABASE_PATH`
+- `LOG_FILE_PATH`
+
+##Mandatory Net-Positive Gate
+
+The final trade gate lives in:
+
+```text
+bot/risk_engine/net_positive.py
+```
+
+Key functions include:
 
 - `get_current_bybit_maker_fee()`
 - `get_current_hyperliquid_maker_fee()`
@@ -128,7 +239,7 @@ Key functions:
 - `calculate_expected_net_bp()`
 - `pre_trade_net_positive_check()`
 
-The gate returns a structured `NetPositiveResult` with:
+The gate returns a structured NetPositiveResult containing:
 
 - `passed`
 - `gross_expected_bp`
@@ -138,20 +249,13 @@ The gate returns a structured `NetPositiveResult` with:
 
 No `TradeIntent` should be emitted unless this check passes.
 
-## Opportunity and Near-Miss Logging
+This is one of the most important safety features in the MVP.
 
-The bot persists scanner decisions in the SQLite database through [bot/database/repository.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/database/repository.py).
+##Opportunity Classification
 
-Primary tables:
+The bot persists scanner decisions and execution outcomes into SQLite.
 
-- `opportunities`
-- `position_pairs`
-- `execution_results`
-- `system_events`
-- `market_snapshots`
-- `funding_snapshots`
-
-Opportunity decisions currently use:
+Primary decision states include:
 
 - `accepted`
 - `executed`
@@ -159,37 +263,67 @@ Opportunity decisions currently use:
 - `rejected_risk`
 - `near_miss`
 
-This supports later reporting for:
+This supports later reporting on:
 
 - trades rejected by the net-positive gate
 - trades rejected by risk checks
 - accepted opportunities that were deferred
 - executed opportunities
+- near-miss opportunities worth further study
 
-## Dashboard Usage
+##Paper Trading and Reporting
 
-The monitoring app is in [bot/monitoring/dashboard.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/monitoring/dashboard.py).
+The MVP now includes:
 
-It exposes four operator views:
+- paper trade creation and duplicate suppression
+- reconciliation of open paper trades
+- realised PnL tracking
+- win rate and average holding time summaries
+- cycle-level reporting:
+  - scanned count
+  - accepted count
+  - near-miss count
+  - rejected count
+  - open paper trade count
+- best-opportunity snapshots
+- Phase 4 summary snapshots over time
 
-- Health:
-  - bot state
-  - exchange status
-  - latest observed latency
-  - paused/running state
-- Opportunities:
-  - accepted
-  - rejected
-  - near-misses
-  - latest gross and net basis points
-- Positions:
-  - open or degraded pairs
-  - current pnl
-  - delta mismatch basis points
-- Trades / Events:
-  - recent executions
-  - reconciliation events
-  - health and pause events
+This makes the system suitable for:
+
+- controlled strategy observation
+- edge validation
+- internal reporting to CRA / Horizon One
+- deciding whether live deployment is justified
+
+##Dashboard Usage
+
+The monitoring app lives in:
+
+```text
+bot/monitoring/dashboard.py
+```
+
+It exposes operator views for:
+
+###Health
+- bot state
+- exchange status
+- observed latency
+- paused / running state
+
+###Opportunities
+- accepted
+- rejected
+- near-misses
+- latest gross and net basis points
+###Positions
+- open or degraded pairs
+- current PnL
+- delta mismatch basis points
+###Trades / Events
+- recent executions
+- reconciliation events
+- health and pause events
 
 Useful endpoints:
 
@@ -200,73 +334,73 @@ Useful endpoints:
 - `/api/events`
 - `/api/executions`
 
-## Docker Run Commands
+##Testing
 
-Build and run with Docker Compose:
-
-```powershell
-docker compose up --build -d
-```
-
-Stop the stack:
-
-```powershell
-docker compose down
-```
-
-The compose file uses restart policy `unless-stopped` and mounts:
-
-- `./.env`
-- `./logs`
-- `./data`
-
-## Testing
-
-Run the full test suite:
-
-```powershell
+Run the full test suite with:
+```bash
 pytest
 ```
+Current automated coverage should be described as targeted MVP coverage, not exhaustive production-hardening coverage.
 
-Additional unit coverage lives in:
+The strongest current coverage areas are:
 
-- [tests/unit/test_net_positive.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/tests/unit/test_net_positive.py)
-- [tests/unit/test_funding_strategy.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/tests/unit/test_funding_strategy.py)
-- [tests/unit/test_risk_checks.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/tests/unit/test_risk_checks.py)
+- net-positive gate behaviour
+- funding strategy logic
+- risk checks
+- paper-trading and reporting paths
 
-Integration note:
+Representative unit tests include:
 
-- Live Hyperliquid trading uses the official `hyperliquid-python-sdk`.
-- Live Bybit trading uses signed V5 REST calls against the official endpoints.
-- The current live execution path is maker-first and only records a pair as executed when both legs fill. If one leg fails or stalls, the bot cancels outstanding orders and attempts an unwind of the exposed side.
-- Pair sizing now uses the smaller effective available balance across Bybit and Hyperliquid, not the summed balance, to stay delta-safe.
-- If exchange snapshots are zero or unavailable, you can provide explicit per-exchange balance overrides through `.env` while keeping the raw snapshots logged for auditability.
+- `tests/unit/test_net_positive.py`
+- `tests/unit/test_funding_strategy.py`
+- `tests/unit/test_risk_checks.py`
 
-## Phase 1 VPS Setup Checklist
+###Coverage position
 
-1. Provision VPS and record the public IP.
-2. Enforce SSH key-only auth and disable password login.
-3. Enable UFW and allow only `22` and `443` if required.
-4. Enable automatic security updates.
-5. Install and enable `fail2ban`.
-6. Install Docker and Docker Compose.
-7. Clone the repository.
-8. Populate `.env`.
-9. Run the latency script:
+The codebase is now materially more testable than earlier in the build because strategy logic, execution flow, reconciliation, and reporting are more clearly separated. Additional integration and failure-path testing is recommended before any persistent live deployment.
 
-```powershell
+##VPS Deployment Checklist
+
+###Phase 1 infrastructure
+- provision VPS and record public IP
+- enforce SSH key-only auth
+- disable password login
+- enable UFW and restrict ports
+- enable automatic security updates
+- install and enable fail2ban
+- install Docker and Docker Compose
+- clone the repository
+- populate `.env`
+- run latency checks:
+```bash
 python scripts/latency_check.py
 ```
+- record average round-trip latency to both endpoints
+- start the bot with Docker Compose
+- confirm restart behavior and dashboard reachability
 
-10. Record average round-trip latency to both testnet endpoints.
-11. Start the bot with Docker Compose.
-12. Confirm restart behavior and dashboard reachability.
+##Known Limitations
+- Execution remains polling-based in bot/execution/pair_executor.py rather than websocket-confirmed.
+- Hyperliquid fill attribution still derives average fill price from recent fills filtered by oid; workable for MVP, but should be hardened before larger live deployment.
+- Bybit order-state confirmation still relies on REST polling rather than private websocket streams.
+- Alerts are logging-first placeholders and are not yet wired to Telegram / Slack.
+- Current major-pair testing did not demonstrate repeated positive net edge after realistic costs.
+- Live deployment should therefore be treated as gated, not assumed.
 
-## Known Limitations
+##Recommendations / Next Steps
+1. Focus strategy work on the branch closest to viability in current observations.
+2. Expand beyond the initial major-pair universe.
+3. Improve execution quality and effective fee tier.
+4. Use the first live deployment only as a tightly controlled canary.
+5. Extend automated testing around integration failure modes and execution edge cases.
 
-- Execution is live-integrated but still polling-based in [bot/execution/pair_executor.py](/C:/Users/Jeremy%20Chan/arbitrage-bot/bot/execution/pair_executor.py), not websocket-confirmed yet.
-- Hyperliquid fill attribution currently derives average fill price from recent fills filtered by `oid`, which is workable for MVP but should be hardened before larger deployment.
-- Bybit order-state confirmation currently relies on REST polling rather than private websocket streams.
-- Alerts are logging-first placeholders and are not yet wired to a real Telegram or Slack destination.
-- No backtester, paper-trading engine, or live deployment reporting exists yet.
-- If both effective exchange balances are zero and `PAUSE_ON_ZERO_EFFECTIVE_CAPITAL=true`, the bot will pause scanning instead of repeatedly emitting `$0.00` trade attempts.
+##Bottom Line
+
+This MVP successfully answers a critical desk-level question:
+
+When does apparent cross-venue arbitrage survive realistic costs — and when should the system refuse to trade?
+
+In the tested market regime, the correct answer was often: do not trade yet.
+
+That is not a failure of the system.
+That is the system working as intended.
