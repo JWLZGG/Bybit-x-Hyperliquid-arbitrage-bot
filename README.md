@@ -106,15 +106,15 @@ The dashboard is available at:
 ```text
 http://localhost:8080
 ```
-##Docker Usage
+## Docker Usage
 
-###Start in background
+### Start in background
 
 ```bash
 docker compose up --build -d
 ```
 
-###Follow logs
+### Follow logs
 
 ```bash
 docker compose logs --tail=200 -f
@@ -133,8 +133,8 @@ The compose setup mounts:
 
 and uses restart policy `unless-stopped`.
 
-##Runtime Modes
-###Paper / simulated mode
+## Runtime Modes
+### Paper / simulated mode
 
 Recommended default for evaluation and reporting.
 
@@ -144,7 +144,7 @@ Typical settings:
 - optional exchange balance overrides for simulation
 - paper execution and reconciliation enabled
 
-###Live mode
+### Live mode
 
 Enable only when:
 
@@ -154,7 +154,7 @@ Enable only when:
 - notional limits are reduced for a canary deployment
 - reporting confirms live opportunities are clearing cost assumptions
 
-##Startup Capital Preflight
+## Startup Capital Preflight
 
 On startup, the bot performs a capital preflight before entering the scan loop.
 
@@ -167,7 +167,7 @@ If usable paired capital cannot be resolved, startup exits or pauses with a clea
 
 This behaviour is intentional and helps prevent invalid $0 trade attempts.
 
-##Configuration
+## Configuration
 
 The single source of truth is:
 
@@ -180,9 +180,9 @@ Use:
 - `load_config()` for initial load
 - `reload_config_if_needed()` for lightweight hot reload
 
-##Core runtime parameters
+## Core runtime parameters
 
-###Exchange environment
+### Exchange environment
 - `ENVIRONMENT`
 - `BYBIT_REST_URL`
 - `HYPERLIQUID_REST_URL`
@@ -198,20 +198,20 @@ Use:
 - `HYPERLIQUID_AVAILABLE_BALANCE_OVERRIDE_USD`
 - `HYPERLIQUID_MARGIN_USED_OVERRIDE_USD`
 
-###Symbols
+### Symbols
 - `SYMBOLS`
-###Fees and return controls
+### Fees and return controls
 - `BYBIT_MAKER_FEE_BP`
 - `HYPERLIQUID_MAKER_FEE_BP`
 - `SLIPPAGE_BUFFER_BP`
 - `SAFETY_MARGIN_BP`
 - `MIN_NET_EXPECTED_RETURN_BP`
-###Strategy thresholds
+### Strategy thresholds
 - `MIN_GROSS_8H_FUNDING_DIFF_BP`
 - `MIN_GROSS_ENTRY_SPREAD_BP`
 - `EXPECTED_CONVERGENCE_PCT`
 - `MAX_HOLD_TIME_MINUTES`
-###Risk controls
+### Risk controls
 - `MAX_POSITION_NOTIONAL_USD`
 - `MAX_MARGIN_UTILIZATION`
 - `LATENCY_GUARD_MS`
@@ -222,13 +222,13 @@ Use:
 - `EXECUTION_ORDER_TIMEOUT_SECONDS`
 - `EXECUTION_STATUS_POLL_INTERVAL_SECONDS`
 - `PAUSE_ON_ZERO_EFFECTIVE_CAPITAL`
-###Dashboard and storage
+### Dashboard and storage
 - `DASHBOARD_HOST`
 - `DASHBOARD_PORT`
 - `DATABASE_PATH`
 - `LOG_FILE_PATH`
 
-##Mandatory Net-Positive Gate
+## Mandatory Net-Positive Gate
 
 The final trade gate lives in:
 
