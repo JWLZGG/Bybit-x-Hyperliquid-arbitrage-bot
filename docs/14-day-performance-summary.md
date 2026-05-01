@@ -4,7 +4,7 @@
 
 Delta-Neutral Arbitrage Bot MVP for Bybit and Hyperliquid
 
-##Objective
+## Objective
 
 Build a production-oriented MVP for cross-venue delta-neutral perpetual arbitrage between Bybit and Hyperliquid, with support for:
 
