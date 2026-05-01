@@ -189,7 +189,7 @@ def get_paper_trade_summary(db_path: str) -> dict:
             """
             SELECT
                 COALESCE(SUM(realized_pnl_usd), 0.0) AS total_realized_pnl_usd,
-                COALESCE(AVG(realized_pnl_bp), 0.0) AS avg_realized_pnl_bp
+                COALESCE(SUM(target_notional_usd), 0.0) AS total_closed_notional_usd
             FROM paper_trades
             WHERE status = 'CLOSED'
             """
@@ -224,7 +224,11 @@ def get_paper_trade_summary(db_path: str) -> dict:
             "losers": losers,
             "win_rate_pct": win_rate,
             "total_realized_pnl_usd": pnl_row["total_realized_pnl_usd"],
-            "avg_realized_pnl_bp": pnl_row["avg_realized_pnl_bp"],
+            "aggregate_realized_pnl_bp": (
+                (pnl_row["total_realized_pnl_usd"] / pnl_row["total_closed_notional_usd"]) * 10_000
+                if pnl_row["total_closed_notional_usd"]
+                else 0.0
+            ),
         }
     finally:
         connection.close()

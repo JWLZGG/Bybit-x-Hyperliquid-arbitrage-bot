@@ -77,7 +77,11 @@ from bot.risk_engine.account_state import (
 )
 from bot.risk_engine.checks import run_pre_trade_risk_checks
 from bot.risk_engine.market_state import MarketStateTracker
-from bot.risk_engine.net_positive import clear_live_fee_overrides, set_live_fee_override
+from bot.risk_engine.net_positive import (
+    calculate_total_cost_bp,
+    clear_live_fee_overrides,
+    set_live_fee_override,
+)
 from bot.risk_engine.sizing import calculate_safe_notional
 from bot.signal_generator.funding_strategy import (
     build_funding_snapshot,
@@ -360,6 +364,10 @@ def _can_downsize_to_suggested_notional(risk_result) -> bool:
 
     return all(any(reason.startswith(prefix) for prefix in allowed_prefixes) for reason in reasons)
 
+def compute_current_net_bp(config: Config, gross_expected_bp: float) -> float:
+    total_cost_bp, _, _, _ = calculate_total_cost_bp(config)
+    return gross_expected_bp - total_cost_bp
+
 async def process_symbol_full(
     config: Config,
     logger,
@@ -575,6 +583,15 @@ async def process_symbol_full(
         config,
         proposed_notional,
     )
+
+    log_opportunity_cost_breakdown(
+        logger,
+        config,
+        symbol,
+        funding_opportunity.strategy_type,
+        funding_opportunity.gross_expected_bp,
+    )
+
     if funding_intent is not None:
         funding_intent = _enrich_trade_intent_with_prices(
             funding_intent,
@@ -593,6 +610,21 @@ async def process_symbol_full(
         config,
         proposed_notional,
     )
+
+    log_opportunity_cost_breakdown(
+        logger,
+        config,
+        symbol,
+        spread_opportunity.strategy_type,
+        spread_opportunity.gross_expected_bp,
+    )
+    log_spread_break_even(
+        logger,
+        config,
+        symbol,
+        spread_snapshot.spread_bp,
+    )
+
     if spread_intent is not None:
         spread_intent = _enrich_trade_intent_with_prices(
             spread_intent,
@@ -652,7 +684,7 @@ async def process_symbol_full(
                 decision=best_observed.decision,
                 strategy_type=best_observed.strategy_type,
                 gross_bp=best_observed.gross_expected_bp,
-                net_bp=best_observed.expected_net_bp,
+                net_bp=compute_current_net_bp(config, best_observed.gross_expected_bp),
                 reason=best_observed.reject_reason,
             )
         return CycleSymbolResult(
@@ -729,7 +761,7 @@ async def process_symbol_full(
                 decision="rejected_risk",
                 strategy_type=selected_intent.strategy_type,
                 gross_bp=selected_opportunity.gross_expected_bp,
-                net_bp=selected_opportunity.expected_net_bp,
+                net_bp=compute_current_net_bp(config, selected_opportunity.gross_expected_bp),
                 reason=rejected.reject_reason,
             )
     elif (
@@ -819,7 +851,7 @@ async def process_symbol_full(
         decision=final_decision,
         strategy_type=selected_opportunity.strategy_type,
         gross_bp=selected_opportunity.gross_expected_bp,
-        net_bp=selected_opportunity.expected_net_bp,
+        net_bp=compute_current_net_bp(config, selected_opportunity.gross_expected_bp),
         reason=execution_result.reason if not execution_result.accepted else None,
     )
 
@@ -916,12 +948,12 @@ def log_phase4_report_snapshot(logger, db_path: str) -> None:
         )
 
     logger.info(
-        "Phase4 paper-stats | opened=%s | closed=%s | open=%s | realized_pnl_usd=%.4f | avg_realized_pnl_bp=%.2f | win_rate=%.2f%% | avg_hold_mins=%.2f",
+        "Phase4 paper-stats | opened=%s | closed=%s | open=%s | realized_pnl_usd=%.4f | aggregate_realized_pnl_bp=%.2f | win_rate=%.2f%% | avg_hold_mins=%.2f",
         paper_stats["opened"],
         paper_stats["closed"],
         paper_stats["open_count"],
         paper_stats["realized_pnl_usd"],
-        paper_stats["avg_realized_pnl_bp"],
+        paper_stats["aggregate_realized_pnl_bp"],
         paper_stats["win_rate"] * 100.0,
         paper_stats["avg_hold_mins"],
     )
@@ -1241,6 +1273,38 @@ async def reconciliation_loop(
 
         await asyncio.sleep(config.reconciliation_interval_seconds)
 
+def log_opportunity_cost_breakdown(logger, config, symbol: str, strategy_type: str, gross_expected_bp: float) -> None:
+    total_cost_bp, round_trip_fees_bp, bybit_fee_bp, hyperliquid_fee_bp = calculate_total_cost_bp(config)
+
+    logger.info(
+        "Cost breakdown %s %s | gross=%.2f bp | bybit_fee=%.2f bp | hyperliquid_fee=%.2f bp | round_trip_fees=%.2f bp | slippage=%.2f bp | safety=%.2f bp | total_cost=%.2f bp | net=%.2f bp",
+        symbol,
+        strategy_type,
+        gross_expected_bp,
+        bybit_fee_bp,
+        hyperliquid_fee_bp,
+        round_trip_fees_bp,
+        config.slippage_buffer_bp,
+        config.safety_margin_bp,
+        total_cost_bp,
+        gross_expected_bp - total_cost_bp,
+    )
+
+def log_spread_break_even(logger, config, symbol: str, current_spread_bp: float) -> None:
+    total_cost_bp, _, _, _ = calculate_total_cost_bp(config)
+
+    if config.expected_convergence_pct <= 0:
+        required_raw_spread_bp = float("inf")
+    else:
+        required_raw_spread_bp = total_cost_bp / (config.expected_convergence_pct / 100.0)
+
+    logger.info(
+        "Spread feasibility %s | current_raw_spread=%.2f bp | expected_convergence_pct=%.2f | break_even_raw_spread=%.2f bp",
+        symbol,
+        abs(current_spread_bp),
+        config.expected_convergence_pct,
+        required_raw_spread_bp,
+    )
 
 async def run() -> None:
     config = load_config()

@@ -112,7 +112,7 @@ def get_latest_paper_summary_row(db_path: str) -> dict[str, Any]:
             """
             SELECT
                 COALESCE(SUM(realized_pnl_usd), 0.0) AS realized_pnl_usd,
-                COALESCE(AVG(realized_pnl_bp), 0.0) AS avg_realized_pnl_bp
+                COALESCE(SUM(target_notional_usd), 0.0) AS realized_notional_usd
             FROM paper_trades
             WHERE status = 'CLOSED'
             """
@@ -141,12 +141,20 @@ def get_latest_paper_summary_row(db_path: str) -> dict[str, Any]:
         )
         avg_hold_row = cur.fetchone()
 
+        realized_pnl_usd = pnl_row["realized_pnl_usd"] or 0.0
+        realized_notional_usd = pnl_row["realized_notional_usd"] or 0.0
+        aggregate_realized_pnl_bp = (
+            (realized_pnl_usd / realized_notional_usd) * 10_000
+            if realized_notional_usd > 0
+            else 0.0
+       )
+
         return {
             "opened": opened,
             "closed": closed,
             "open_count": open_count,
             "realized_pnl_usd": pnl_row["realized_pnl_usd"] or 0.0,
-            "avg_realized_pnl_bp": pnl_row["avg_realized_pnl_bp"] or 0.0,
+            "aggregate_realized_pnl_bp": aggregate_realized_pnl_bp,
             "win_rate": win_rate,
             "avg_hold_mins": avg_hold_row["avg_hold_mins"] or 0.0,
         }
