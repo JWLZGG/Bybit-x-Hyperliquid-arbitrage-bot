@@ -533,25 +533,3 @@ class BybitClient:
             size = float(level[1])
             total += price * size
         return total
-
-    async def get_orderbook(self, symbol: str, limit: int = 20) -> dict:
-        """Fetch Bybit linear perp order book and return normalized bid/ask levels."""
-        normalized_symbol = symbol.upper()
-
-        payload = await self._public_get(
-            "/v5/market/orderbook",
-            {"category": "linear", "symbol": normalized_symbol, "limit": limit},
-        )
-
-        result = payload.get("result") or {}
-        bids_raw = result.get("b") or []
-        asks_raw = result.get("a") or []
-
-        if not bids_raw or not asks_raw:
-            raise ValueError(f"Unexpected Bybit orderbook payload for {normalized_symbol}: {payload}")
-
-        return {
-            "symbol": normalized_symbol,
-            "bids": [[float(price), float(size)] for price, size in bids_raw],
-            "asks": [[float(price), float(size)] for price, size in asks_raw],
-        }

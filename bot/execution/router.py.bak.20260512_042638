@@ -1,9 +1,9 @@
+from bot.execution.canary_guard import validate_canary_intent, record_canary_trade
 from __future__ import annotations
 
-from bot.config.config import Config, load_config
 from bot.data_ingestion.bybit_client import BybitClient
 from bot.data_ingestion.hyperliquid_client import HyperliquidClient
-from bot.execution.canary_guard import validate_canary_intent, record_canary_trade
+from bot.config.config import Config, load_config
 from bot.execution.models import ExecutionIntent, ExecutionResult
 from bot.execution.pair_executor import execute_delta_neutral_pair
 from bot.signal_generator.models import TradeIntent
@@ -15,27 +15,19 @@ async def submit_execution_intent(
     bybit_client: BybitClient | None = None,
     hyperliquid_client: HyperliquidClient | None = None,
     db_path: str | None = None,
-) -> ExecutionResult:
-    runtime_config = config or load_config()
-
-    canary_ok, canary_reason, guarded_intent = validate_canary_intent(intent)
-
+    canary_ok, canary_reason, intent = validate_canary_intent(intent)
     if not canary_ok:
         return ExecutionResult(
             accepted=False,
-            symbol=guarded_intent.symbol,
-            strategy_type=guarded_intent.strategy_type,
-            target_notional_usd=guarded_intent.target_notional_usd,
+            symbol=intent.symbol,
+            strategy_type=intent.strategy_type,
+            target_notional_usd=intent.target_notional_usd,
             reason=canary_reason,
         )
-
-    trade_intent = (
-        guarded_intent
-        if isinstance(guarded_intent, TradeIntent)
-        else guarded_intent.to_trade_intent()
-    )
-
-    execution_result = await execute_delta_neutral_pair(
+) -> ExecutionResult:
+    runtime_config = config or load_config()
+    trade_intent = intent if isinstance(intent, TradeIntent) else intent.to_trade_intent()
+    return await execute_delta_neutral_pair(
         trade_intent,
         runtime_config,
         bybit_client=bybit_client,
@@ -43,7 +35,4 @@ async def submit_execution_intent(
         db_path=db_path,
     )
 
-    if execution_result.accepted:
-        record_canary_trade(guarded_intent.symbol)
-
-    return execution_result
+    record_canary_trade(intent.symbol)

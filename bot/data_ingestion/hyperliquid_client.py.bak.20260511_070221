@@ -62,6 +62,8 @@ class HyperliquidClient:
             else None
         )
         self._resolved_user_role: str | None = None
+        print(f"DEBUG Hyperliquid signer wallet: {self.signer_wallet}", file=sys.stderr)
+        print(f"DEBUG Hyperliquid resolved user: {self.resolved_user}", file=sys.stderr)
 
     @staticmethod
     def _to_hl_coin(symbol: str) -> str:
@@ -267,58 +269,6 @@ class HyperliquidClient:
             ask_size=float(best_ask.get("sz") or best_ask.get("size")),
             timestamp=datetime.now(timezone.utc),
         )
-
-    async def get_orderbook(self, symbol: str, limit: int = 20) -> dict[str, Any]:
-        """Fetch Hyperliquid perp order book and return normalized bid/ask levels.
-
-        Returns:
-            {
-                "symbol": "BTCUSDT",
-                "coin": "BTC",
-                "bids": [[price, size], ...],
-                "asks": [[price, size], ...],
-            }
-        """
-        coin = self._to_hl_coin(symbol)
-        url = f"{self.base_url}/info"
-        body = {"type": "l2Book", "coin": coin}
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body, timeout=10) as response:
-                response.raise_for_status()
-                payload = await response.json()
-
-        levels = payload.get("levels")
-        if not levels or len(levels) < 2:
-            raise ValueError(f"Unexpected Hyperliquid orderbook payload for {symbol}: {payload}")
-
-        bids_raw = levels[0] or []
-        asks_raw = levels[1] or []
-
-        bids = []
-        asks = []
-
-        for level in bids_raw[:limit]:
-            price = level.get("px")
-            size = level.get("sz")
-            if price is not None and size is not None:
-                bids.append([float(price), float(size)])
-
-        for level in asks_raw[:limit]:
-            price = level.get("px")
-            size = level.get("sz")
-            if price is not None and size is not None:
-                asks.append([float(price), float(size)])
-
-        if not bids or not asks:
-            raise ValueError(f"Unexpected Hyperliquid orderbook levels for {symbol}: {payload}")
-
-        return {
-            "symbol": symbol.upper(),
-            "coin": coin,
-            "bids": bids,
-            "asks": asks,
-        }
 
     async def get_orderbook_depth_usd(self, symbol: str) -> float:
         coin = self._to_hl_coin(symbol)

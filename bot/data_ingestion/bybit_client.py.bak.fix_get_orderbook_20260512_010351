@@ -535,23 +535,40 @@ class BybitClient:
         return total
 
     async def get_orderbook(self, symbol: str, limit: int = 20) -> dict:
-        """Fetch Bybit linear perp order book and return normalized bid/ask levels."""
-        normalized_symbol = symbol.upper()
+        """Fetch Bybit linear perp order book and return normalized bid/ask levels.
 
-        payload = await self._public_get(
-            "/v5/market/orderbook",
-            {"category": "linear", "symbol": normalized_symbol, "limit": limit},
-        )
+        Returns:
+            {
+                "symbol": "BTCUSDT",
+                "bids": [[price, size], ...],
+                "asks": [[price, size], ...],
+            }
+        """
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "limit": limit,
+        }
+
+        url = f"{self.rest_url}/v5/market/orderbook"
+
+        async with self.session.get(url, params=params) as response:
+            response.raise_for_status()
+            payload = await response.json()
+
+        if payload.get("retCode") != 0:
+            raise ValueError(f"Bybit orderbook error for {symbol}: {payload}")
 
         result = payload.get("result") or {}
         bids_raw = result.get("b") or []
         asks_raw = result.get("a") or []
 
         if not bids_raw or not asks_raw:
-            raise ValueError(f"Unexpected Bybit orderbook payload for {normalized_symbol}: {payload}")
+            raise ValueError(f"Unexpected Bybit orderbook payload for {symbol}: {payload}")
 
         return {
-            "symbol": normalized_symbol,
+            "symbol": symbol,
             "bids": [[float(price), float(size)] for price, size in bids_raw],
             "asks": [[float(price), float(size)] for price, size in asks_raw],
         }
+
