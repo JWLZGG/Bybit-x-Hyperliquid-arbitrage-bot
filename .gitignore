@@ -11,3 +11,10 @@ data/
 tmp*/
 .tmp_pytest/
 .*pytest*/
+
+# Local backups / generated artifacts
+*.bak
+*.bak.*
+*.backup.*
+reports/
+docs/db/
